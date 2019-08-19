@@ -3,7 +3,7 @@ sys.path.insert(0, '..')
 from src.preprocess import extract_feature,encode_target
 from joblib import Parallel, delayed
 import argparse
-import os 
+import os
 from pathlib import Path
 from tqdm import tqdm
 import pickle
@@ -19,6 +19,8 @@ def boolean_string(s):
 parser = argparse.ArgumentParser(description='Preprocess program for LibriSpeech dataset.')
 parser.add_argument('--data_path', type=str, help='Path to raw LibriSpeech dataset')
 parser.add_argument('--feature_type', default='fbank', type=str, help='Feature type ( mfcc / fbank )', required=False)
+parser.add_argument('--model_type', default='bpe', type=str, help='Feature type ( bpe / unigram )', required=False)
+parser.add_argument('--character_coverage', default=1.0, type=float, help='character coverage', required=False)
 parser.add_argument('--feature_dim', default=40, type=int, help='Dimension of feature', required=False)
 parser.add_argument('--apply_delta', default=True, type=boolean_string, help='Append Delta', required=False)
 parser.add_argument('--apply_delta_delta', default=False, type=boolean_string, help='Append Delta Delta', required=False)
@@ -55,56 +57,88 @@ encode_table = None
 output_dir = None
 dim = paras.feature_dim*(1+paras.apply_delta+paras.apply_delta_delta)
 
-# BPE training
+# training
 if paras.target == 'subword':
     # Setup path
     output_dir = os.path.join(paras.output_path,'_'.join(['libri',str(paras.feature_type)+str(dim),str(paras.target)+str(paras.n_tokens)]))
     if not os.path.exists(output_dir):os.makedirs(output_dir)
-    bpe_dir = os.path.join(output_dir,'bpe')
-    if not os.path.exists(bpe_dir):os.makedirs(bpe_dir)
+    model_dir = os.path.join(output_dir, paras.model_type)
+    if not os.path.exists(model_dir):os.makedirs(model_dir)
 
     # Select dataset
     print('')
-    print('Pretrain BPE for subword unit.')
+    print('Pretrain {} for subword unit.'.format(paras.model_type))
     print('Data sets :')
     for idx,s in enumerate(sets):
         print('\t',idx,':',s)
-    bpe_tr = input('Please enter the index for training sets for BPE (seperate w/ space): ')
-    bpe_tr = [sets[int(t)] for t in bpe_tr.split(' ')]
+    model_tr = input('Please enter the index for training sets for {} (seperate w/ space): '.format(paras.model_type))
+    model_tr = [sets[int(t)] for t in model_tr.split(' ')]
 
     # Collect text
     tr_txt = []
-    for s in bpe_tr:
+    for s in model_tr:
         todo = list(Path(os.path.join(paras.data_path,s)).rglob("*.flac"))
         tr_txt+=Parallel(n_jobs=paras.n_jobs)(delayed(read_text)(str(file),target=paras.target) for file in todo)
-    with open(os.path.join(bpe_dir,'train.txt'),'w') as f:
+    with open(os.path.join(model_dir,'train.txt'),'w') as f:
         for s in tr_txt:f.write(s+'\n')
 
     # Train BPE
     from subprocess import call
-    call(['spm_train',
-          '--input='+os.path.join(bpe_dir,'train.txt'),
-          '--model_prefix='+os.path.join(bpe_dir,'bpe'),
-          '--vocab_size='+str(paras.n_tokens),
-          '--character_coverage=1.0'
-        ])
+    call(["python",
+          "-c",
+          """
+import sentencepiece as spm
+spm.SentencePieceTrainer.Train(
+'--input={} --model_prefix={} --vocab_size={} --model_type={} --character_coverage={}')
+""".format(os.path.join(model_dir, 'train.txt'),
+           os.path.join(model_dir, paras.model_type),
+           str(paras.n_tokens),
+           paras.model_type,
+           paras.character_coverage)
+    ])
+    #  call(['spm_train',
+    #        '--input='+os.path.join(bpe_dir,'train.txt'),
+    #        '--model_prefix='+os.path.join(bpe_dir,'bpe'),
+    #        '--vocab_size='+str(paras.n_tokens),
+    #        '--character_coverage=1.0'
+    #      ])
+
     # Encode data
-    if not os.path.exists(os.path.join(bpe_dir,'raw')):os.makedirs(os.path.join(bpe_dir,'raw'))
-    if not os.path.exists(os.path.join(bpe_dir,'encode')):os.makedirs(os.path.join(bpe_dir,'encode'))
+    if not os.path.exists(os.path.join(model_dir,'raw')):os.makedirs(os.path.join(model_dir,'raw'))
+    if not os.path.exists(os.path.join(model_dir,'encode')):os.makedirs(os.path.join(model_dir,'encode'))
     for s in sets:
         todo = list(Path(os.path.join(paras.data_path,s)).rglob("*.flac"))
         txts = Parallel(n_jobs=paras.n_jobs)(delayed(read_text)(str(file),target=paras.target) for file in todo)
-        with open(os.path.join(bpe_dir,'raw',s+'.txt'),'w') as f:
+        with open(os.path.join(model_dir,'raw',s+'.txt'),'w') as f:
             for sent in txts:f.write(sent+'\n')
-        call(['spm_encode',
-              '--model='+os.path.join(bpe_dir,'bpe.model'),
-              '--output_format=piece'
-            ],stdin=open(os.path.join(bpe_dir,'raw',s+'.txt'),'r'),
-              stdout=open(os.path.join(bpe_dir,'encode',s+'.txt'),'w'))
+        call(["python",
+              "-c",
+              """
+import sentencepiece as spm
+sp = spm.SentencePieceProcessor()
+sp.Load('{}')
+f_in = open('{}', 'r')
+f_out = open('{}', 'w')
+line = f_in.readline()
+while line:
+    f_out.write(' '.join(sp.EncodeAsPieces(line)) + '\\n')
+    line = f_in.readline()
+f_in.close()
+f_out.close()
+""".format(os.path.join(model_dir, '{}.model'.format(paras.model_type)),
+           os.path.join(model_dir, 'raw', s + '.txt'),
+           os.path.join(model_dir, 'encode', s + '.txt'))
+        ])
+        print('encoding ' + s + ' done')
+        #  call(['spm_encode',
+        #        '--model='+os.path.join(model_dir,'{}.model'.format(paras.model_type)),
+        #        '--output_format=piece'
+        #      ],stdin=open(os.path.join(model_dir,'raw',s+'.txt'),'r'),
+        #        stdout=open(os.path.join(model_dir,'encode',s+'.txt'),'w'))
 
     # Make Dict
     encode_table = {'<sos>':0,'<eos>':1}
-    with open(os.path.join(bpe_dir,'bpe.vocab'),'r', encoding="utf-8") as f:
+    with open(os.path.join(model_dir,'{}.vocab'.format(paras.model_type)),'r', encoding="utf-8") as f:
         for line in f:
             tok = line.split('\t')[0]
             if tok not in ['<s>','</s>']:
@@ -128,7 +162,7 @@ for s in tr_set:
     print('Encoding target...',flush=True)
     if paras.target == 'subword':
         tr_y = []
-        with open(os.path.join(bpe_dir,'encode',s+'.txt'),'r') as f:
+        with open(os.path.join(model_dir,'encode',s+'.txt'),'r') as f:
             for line in f:tr_y.append(line[:-1].split(' '))
     else:
         tr_y = Parallel(n_jobs=paras.n_jobs)(delayed(read_text)(str(file),target=paras.target) for file in tqdm(todo))
