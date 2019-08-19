@@ -19,7 +19,7 @@ def boolean_string(s):
 parser = argparse.ArgumentParser(description='Preprocess program for LibriSpeech dataset.')
 parser.add_argument('--data_path', type=str, help='Path to raw LibriSpeech dataset')
 parser.add_argument('--feature_type', default='fbank', type=str, help='Feature type ( mfcc / fbank )', required=False)
-parser.add_argument('--model_type', default='bpe', type=str, help='Feature type ( bpe / unigram )', required=False)
+parser.add_argument('--model_type', default='unigram', type=str, help='Feature type ( bpe / unigram )', required=False)
 parser.add_argument('--character_coverage', default=1.0, type=float, help='character coverage', required=False)
 parser.add_argument('--feature_dim', default=40, type=int, help='Dimension of feature', required=False)
 parser.add_argument('--apply_delta', default=True, type=boolean_string, help='Append Delta', required=False)
